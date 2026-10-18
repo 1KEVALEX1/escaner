@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Escáner de asistencia</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#0f172a;color:#f1f5f9;
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px;
+       padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(16px,env(safe-area-inset-bottom))}
+  .hidden{display:none!important}
+  h1{font-size:20px;font-weight:800;margin-bottom:4px}
+  .sub{color:#94a3b8;font-size:13px;margin-bottom:20px}
+  .panel{width:100%;max-width:440px}
+  input{width:100%;padding:16px;border-radius:14px;border:1.5px solid #334155;background:#1e293b;color:#fff;
+        font-size:18px;text-align:center;letter-spacing:2px;margin-bottom:12px}
+  button{width:100%;padding:16px;border-radius:14px;border:0;background:#2563eb;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+  button.sec{background:#334155;margin-top:10px}
+  .error-pin{color:#fca5a5;font-size:14px;margin-bottom:12px;min-height:18px;text-align:center}
+  .barra{display:flex;justify-content:space-between;align-items:center;width:100%;max-width:440px;margin-bottom:12px}
+  .barra small{color:#94a3b8}
+  .barra a{color:#93c5fd;font-size:13px;cursor:pointer;text-decoration:underline}
+  #lector{width:100%;max-width:440px;border-radius:18px;overflow:hidden;background:#000;min-height:280px}
+  .ayuda{color:#94a3b8;font-size:13px;text-align:center;margin-top:12px}
+
+  .resultado{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+             padding:24px;text-align:center;z-index:10}
+  .resultado .icono{font-size:84px;margin-bottom:10px}
+  .resultado .titulo{font-size:26px;font-weight:800;margin-bottom:14px}
+  .resultado .nombre{font-size:30px;font-weight:900;line-height:1.15;margin-bottom:8px;word-break:break-word}
+  .resultado .detalle{font-size:16px;opacity:.95;margin-top:6px}
+  .resultado .puntos{margin-top:14px;background:rgba(255,255,255,.2);padding:10px 18px;border-radius:12px;font-weight:700}
+  .resultado .toca{position:absolute;bottom:max(24px,env(safe-area-inset-bottom));font-size:13px;opacity:.7}
+  .r-entrada{background:#047857}.r-retardo{background:#b45309}.r-salida{background:#1d4ed8}
+  .r-cerrado{background:#475569}.r-error{background:#b91c1c}.r-cargando{background:#0f172a}
+  .spinner{width:46px;height:46px;border:5px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:g 0.8s linear infinite}
+  @keyframes g{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<!-- ───────── PIN ───────── -->
+<div id="pantalla-pin" class="panel" style="margin-top:12vh">
+  <h1>Escáner de asistencia</h1>
+  <p class="sub">Acceso del personal de apoyo</p>
+  <div id="error-pin" class="error-pin"></div>
+  <input id="pin" type="password" placeholder="PIN" autocomplete="off" autocapitalize="off">
+  <button id="btn-entrar">Entrar</button>
+</div>
+
+<!-- ───────── ESCÁNER ───────── -->
+<div id="pantalla-escaner" class="hidden" style="width:100%;display:flex;flex-direction:column;align-items:center">
+  <div class="barra">
+    <small>Escáner de asistencia</small>
+    <a id="btn-cambiar">Cambiar PIN</a>
+  </div>
+  <div id="lector"></div>
+  <p class="ayuda" id="ayuda">Apunta la cámara al QR de entrada o de salida de la credencial</p>
+  <button class="sec hidden" id="btn-camara" style="max-width:440px">Iniciar cámara</button>
+</div>
+
+<!-- ───────── RESULTADO ───────── -->
+<div id="resultado" class="resultado hidden" onclick="cerrarResultado()"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script>
+// ▼▼ URL de tu web app (la misma que usan los QR impresos) ▼▼
+var EXEC_URL = "https://script.google.com/macros/s/AKfycbycTrzqXkgoSm8RlGixKn3HI817Y2IT5cYZzc60yverRKOs46D-ZHQJ6ThTa47sl5LP/exec";
+
+var PIN_KEY = "asistencia_pin";
+var pin = "";
+var lector = null;
+var procesando = false;
+var ultimoTexto = "";
+var ultimoTiempo = 0;
+var temporizador = null;
+
+var el = function (id) { return document.getElementById(id); };
+
+function guardar(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function leer(k)       { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+function borrar(k)     { try { localStorage.removeItem(k); } catch (e) {} }
+
+function mostrarPantallaPin(mensaje) {
+  detenerCamara();
+  el("pantalla-escaner").classList.add("hidden");
+  el("pantalla-pin").classList.remove("hidden");
+  el("error-pin").textContent = mensaje || "";
+  el("pin").value = "";
+  el("pin").focus();
+}
+
+function mostrarPantallaEscaner() {
+  el("pantalla-pin").classList.add("hidden");
+  el("pantalla-escaner").classList.remove("hidden");
+  arrancarCamara();
+}
+
+el("btn-entrar").onclick = function () {
+  var v = el("pin").value.trim();
+  if (!v) { el("error-pin").textContent = "Escribe tu PIN."; return; }
+  pin = v;
+  guardar(PIN_KEY, pin);
+  mostrarPantallaEscaner();
+};
+el("pin").addEventListener("keydown", function (e) { if (e.key === "Enter") el("btn-entrar").click(); });
+el("btn-cambiar").onclick = function () { borrar(PIN_KEY); pin = ""; mostrarPantallaPin(""); };
+el("btn-camara").onclick = function () { arrancarCamara(); };
+
+// ───────── Cámara ─────────
+function arrancarCamara() {
+  el("btn-camara").classList.add("hidden");
+  if (lector) { return; }
+  lector = new Html5Qrcode("lector");
+  lector.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s }; } },
+    onScan,
+    function () {}
+  ).catch(function (err) {
+    lector = null;
+    el("ayuda").textContent = "No se pudo abrir la cámara. Revisa el permiso del navegador y vuelve a intentarlo.";
+    el("btn-camara").classList.remove("hidden");
+  });
+}
+
+function detenerCamara() {
+  if (lector) {
+    var l = lector; lector = null;
+    l.stop().then(function () { l.clear(); }).catch(function () {});
+  }
+}
+
+// ───────── Lectura del QR ─────────
+function parsearQR(texto) {
+  var i = texto.indexOf("?");
+  if (i < 0) return null;
+  var p = new URLSearchParams(texto.substring(i + 1));
+  var id = p.get("id"), tipo = p.get("tipo");
+  if (!id || !tipo) return null;
+  return { id: id, nombre: p.get("nombre") || "", tipo: tipo, v: p.get("v") || "", c: p.get("c") || "" };
+}
+
+function onScan(texto) {
+  if (procesando) return;
+  var ahora = Date.now();
+  if (texto === ultimoTexto && ahora - ultimoTiempo < 5000) return;   // evita doble lectura
+  ultimoTexto = texto; ultimoTiempo = ahora;
+
+  var datos = parsearQR(texto);
+  if (!datos) {
+    procesando = true;
+    mostrarResultado({ estado: "error", mensaje: "Este QR no es una credencial del sistema." });
+    return;
+  }
+  enviar(datos);
+}
+
+function enviar(d) {
+  procesando = true;
+  mostrarCargando();
+
+  var params = new URLSearchParams({ formato: "json", pin: pin, id: d.id, nombre: d.nombre, tipo: d.tipo });
+  if (d.v) params.set("v", d.v);
+  if (d.c) params.set("c", d.c);
+
+  fetch(EXEC_URL + "?" + params.toString())
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.estado === "noauth") {
+        cerrarResultado();
+        borrar(PIN_KEY); pin = "";
+        mostrarPantallaPin(res.mensaje || "PIN incorrecto.");
+        return;
+      }
+      mostrarResultado(res);
+    })
+    .catch(function () {
+      mostrarResultado({ estado: "error", mensaje: "Sin conexión o error de red. Vuelve a escanear." });
+    });
+}
+
+// ───────── Resultado ─────────
+var ICONOS = { entrada: "✅", retardo: "⚠️", salida: "👋", cerrado: "⏰", error: "❌" };
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+function mostrarCargando() {
+  var r = el("resultado");
+  r.className = "resultado r-cargando";
+  r.innerHTML = '<div class="spinner"></div>';
+}
+
+function mostrarResultado(res) {
+  var estado = res.estado in ICONOS ? res.estado : "error";
+  var titulo = res.titulo || ({ error: "Atención", cerrado: "Registro cerrado" }[estado] || "");
+  var html = '<div class="icono">' + ICONOS[estado] + '</div>';
+  if (titulo) html += '<div class="titulo">' + esc(titulo) + '</div>';
+  if (res.nombre) html += '<div class="nombre">' + esc(res.nombre) + '</div>';
+  if (res.id) html += '<div class="detalle">ID: ' + esc(res.id) + '</div>';
+  if (res.hora) html += '<div class="detalle">' + esc(res.hora) + ' · ' + esc(res.fecha || "") + '</div>';
+  if (res.mensaje) html += '<div class="detalle" style="margin-top:14px;font-size:18px">' + esc(res.mensaje) + '</div>';
+  if (res.puntos) html += '<div class="puntos">+' + esc(res.puntos) + ' punto' + (res.puntos === 1 ? '' : 's') + '</div>';
+  html += '<div class="toca">Toca para continuar</div>';
+
+  var r = el("resultado");
+  r.className = "resultado r-" + estado;
+  r.innerHTML = html;
+
+  try { if (navigator.vibrate) navigator.vibrate(estado === "error" ? [200, 100, 200] : 120); } catch (e) {}
+
+  clearTimeout(temporizador);
+  temporizador = setTimeout(cerrarResultado, estado === "error" || estado === "cerrado" ? 4000 : 2500);
+}
+
+function cerrarResultado() {
+  clearTimeout(temporizador);
+  el("resultado").className = "resultado hidden";
+  procesando = false;
+}
+
+// ───────── Inicio ─────────
+(function () {
+  pin = leer(PIN_KEY);
+  if (pin) mostrarPantallaEscaner(); else mostrarPantallaPin("");
+})();
+</script>
+</body>
+</html>
