@@ -193,12 +193,23 @@ el("btn-cambiar").onclick = function () { borrar(PIN_KEY); pin = ""; mostrarPant
 el("btn-camara").onclick = function () { arrancarCamara(); };
 el("btn-reiniciar").onclick = function () { reiniciarCamara(); };
 
+// Leer SOLO códigos QR: los códigos de barras (de la credencial, de otros papeles o "falsos"
+// que la cámara cree ver en texturas) provocaban "Este QR no es una credencial del sistema".
+function soloQR() {
+  try {
+    if (window.Html5QrcodeSupportedFormats) {
+      return { formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE], verbose: false };
+    }
+  } catch (e) {}
+  return false;
+}
+
 // ───────── Cámara ─────────
 function arrancarCamara() {
   el("btn-camara").classList.add("hidden");
   if (lector) { return; }
   try {
-    lector = new Html5Qrcode("lector");
+    lector = new Html5Qrcode("lector", soloQR());
   } catch (e) {
     lector = null;
     el("ayuda").textContent = "No se pudo cargar el lector de QR. Revisa la conexión y recarga la página.";
@@ -317,7 +328,9 @@ function procesarTexto(texto) {
   var datos = parsearQR(texto);
   if (!datos) {
     procesando = true;
-    mostrarResultado({ estado: "error", mensaje: "Este QR no es una credencial del sistema." });
+    var leido = String(texto || "").replace(/\s+/g, " ").trim();
+    if (leido.length > 90) leido = leido.substring(0, 90) + "…";
+    mostrarResultado({ estado: "error", mensaje: "Este QR no es una credencial del sistema. Se leyó: " + (leido || "(vacío)") });
     return;
   }
   enviar(datos);
@@ -477,7 +490,7 @@ function leerQRDeFoto(file) {
 }
 
 function leerConLibreria(blobReducido, original) {
-  lectorFoto = lectorFoto || new Html5Qrcode("lector-foto");
+  lectorFoto = lectorFoto || new Html5Qrcode("lector-foto", soloQR());
   var archivo = new File([blobReducido], "qr.jpg", { type: "image/jpeg" });
   return lectorFoto.scanFile(archivo, false).catch(function () { return lectorFoto.scanFile(original, false); });
 }
